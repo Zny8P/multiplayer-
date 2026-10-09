@@ -7,7 +7,6 @@ const PORT = process.env.PORT || 3000;
 
 const server = http.createServer((req, res) => {
   const file = path.join(__dirname, "index.html");
-
   fs.readFile(file, (err, data) => {
     if (err) {
       res.writeHead(404);
@@ -20,18 +19,26 @@ const server = http.createServer((req, res) => {
 
 const wss = new WebSocket.Server({ server });
 const players = new Map();
-const clients = new Map(); // id -> ws
+const clients = new Map();
+let bullets = [];
 
 let nextId = 1;
+let nextBulletId = 1;
 
-// Mapa expandido para 2000x2000
+// Configurações do Mundo
 const WORLD_WIDTH = 2000;
 const WORLD_HEIGHT = 2000;
-
 const PLAYER_SIZE = 30;
 const SPEED = 5;
 
-// Geração de Arbustos Low-Poly fixos
+// Configurações da Arma
+const BULLET_SPEED = 18;
+const BULLET_DAMAGE = 10;
+const SHOT_COOLDOWN = 500; // 0.5s por tiro
+const RELOAD_TIME = 1500;   // 1.5s recarga
+const REVEAL_TIME = 1500;   // 1.5s revelação na moita
+
+// Arbustos
 const BUSHES_COUNT = 35;
 const bushes = [];
 
@@ -41,59 +48,65 @@ function generateBushes() {
     const x = radius + Math.random() * (WORLD_WIDTH - radius * 2);
     const y = radius + Math.random() * (WORLD_HEIGHT - radius * 2);
 
-    // Gera vértices para o visual low-poly
     const pointsCount = 6 + Math.floor(Math.random() * 3);
     const points = [];
     for (let j = 0; j < pointsCount; j++) {
       const angle = (j / pointsCount) * Math.PI * 2;
       const r = radius * (0.8 + Math.random() * 0.4);
-      points.push({
-        x: Math.cos(angle) * r,
-        y: Math.sin(angle) * r
-      });
+      points.push({ x: Math.cos(angle) * r, y: Math.sin(angle) * r });
     }
 
-    bushes.push({
-      id: i + 1,
-      x,
-      y,
-      radius,
-      points
-    });
+    bushes.push({ id: i + 1, x, y, radius, points });
   }
 }
 generateBushes();
 
-function createPlayer(id) {
+function createPlayer(id, name) {
   return {
     id,
+    name: name || `Jogador ${id}`,
     x: Math.random() * (WORLD_WIDTH - PLAYER_SIZE),
     y: Math.random() * (WORLD_HEIGHT - PLAYER_SIZE),
     angle: 0,
+    hp: 200,
+    maxHp: 200,
+    ammo: 10,
+    maxAmmo: 10,
+    isReloading: false,
+    reloadEndTime: 0,
+    lastShotTime: 0,
+    revealedUntil: 0,
+    isDead: false,
     color: `hsl(${Math.random() * 360}, 80%, 60%)`,
     inBush: null,
+    wasShooting: false,
     input: {
       up: false,
       down: false,
       left: false,
       right: false,
-      angle: 0
+      angle: 0,
+      shoot: false,
+      reload: false
     }
   };
 }
 
-// Filtra jogadores visíveis para um cliente específico
-function getVisiblePlayersFor(recipientId) {
+function getVisiblePlayersFor(recipientId, now) {
   const result = [];
   for (const player of players.values()) {
-    // O próprio jogador sempre se vê.
-    // Inimigos só aparecem se NÃO estiverem dentro de um arbusto.
-    if (player.id === recipientId || player.inBush === null) {
+    if (player.isDead) continue;
+
+    const isRevealed = now < player.revealedUntil;
+    if (player.id === recipientId || player.inBush === null || isRevealed) {
       result.push({
         id: player.id,
+        name: player.name,
         x: player.x,
         y: player.y,
         angle: player.angle,
+        hp: player.hp,
+        maxHp: player.maxHp,
         color: player.color,
         inBush: player.inBush
       });
@@ -102,38 +115,31 @@ function getVisiblePlayersFor(recipientId) {
   return result;
 }
 
-// Retorna lista de IDs de arbustos que contêm ao menos um jogador
-function getActiveBushIds() {
-  const activeSet = new Set();
-  for (const player of players.values()) {
-    if (player.inBush !== null) {
-      activeSet.add(player.inBush);
-    }
-  }
-  return Array.from(activeSet);
-}
-
 wss.on("connection", ws => {
-  const id = String(nextId++);
-  const player = createPlayer(id);
-
-  players.set(id, player);
-  clients.set(id, ws);
-
-  console.log(`Jogador ${id} entrou.`);
-
-  // Dados iniciais
-  ws.send(JSON.stringify({
-    type: "init",
-    id,
-    players: getVisiblePlayersFor(id),
-    world: { width: WORLD_WIDTH, height: WORLD_HEIGHT },
-    bushes
-  }));
+  let id = null;
 
   ws.on("message", message => {
     try {
       const data = JSON.parse(message);
+
+      if (data.type === "join") {
+        id = String(nextId++);
+        const player = createPlayer(id, data.name);
+        players.set(id, player);
+        clients.set(id, ws);
+
+        console.log(`Jogador ${player.name} (${id}) entrou.`);
+
+        ws.send(JSON.stringify({
+          type: "init",
+          id,
+          world: { width: WORLD_WIDTH, height: WORLD_HEIGHT },
+          bushes
+        }));
+        return;
+      }
+
+      if (!id) return;
       const player = players.get(id);
       if (!player) return;
 
@@ -142,41 +148,63 @@ wss.on("connection", ws => {
         player.input.down = !!data.down;
         player.input.left = !!data.left;
         player.input.right = !!data.right;
+        player.input.shoot = !!data.shoot;
+        player.input.reload = !!data.reload;
 
         if (typeof data.angle === "number") {
           player.angle = data.angle;
         }
       }
+
+      if (data.type === "respawn") {
+        if (player.isDead) {
+          player.isDead = false;
+          player.hp = player.maxHp;
+          player.ammo = player.maxAmmo;
+          player.isReloading = false;
+          player.x = Math.random() * (WORLD_WIDTH - PLAYER_SIZE);
+          player.y = Math.random() * (WORLD_HEIGHT - PLAYER_SIZE);
+        }
+      }
+
     } catch (error) {
       console.log("Mensagem inválida.");
     }
   });
 
   ws.on("close", () => {
-    players.delete(id);
-    clients.delete(id);
-    console.log(`Jogador ${id} saiu.`);
+    if (id) {
+      players.delete(id);
+      clients.delete(id);
+      console.log(`Jogador ${id} saiu.`);
+    }
   });
 
   ws.on("error", () => {
-    players.delete(id);
-    clients.delete(id);
+    if (id) {
+      players.delete(id);
+      clients.delete(id);
+    }
   });
 });
 
-// Loop principal do servidor (30 FPS)
+// Loop principal (30 FPS)
 setInterval(() => {
+  const now = Date.now();
+
   for (const player of players.values()) {
+    if (player.isDead) continue;
+
+    // Movimentação
     if (player.input.up) player.y -= SPEED;
     if (player.input.down) player.y += SPEED;
     if (player.input.left) player.x -= SPEED;
     if (player.input.right) player.x += SPEED;
 
-    // Limites do mundo
     player.x = Math.max(0, Math.min(WORLD_WIDTH - PLAYER_SIZE, player.x));
     player.y = Math.max(0, Math.min(WORLD_HEIGHT - PLAYER_SIZE, player.y));
 
-    // Verificação de arbusto (centro do personagem)
+    // Arbusto
     const px = player.x + PLAYER_SIZE / 2;
     const py = player.y + PLAYER_SIZE / 2;
     let insideBushId = null;
@@ -190,16 +218,118 @@ setInterval(() => {
       }
     }
     player.inBush = insideBushId;
+
+    // Recarga
+    if (player.input.reload && !player.isReloading && player.ammo < player.maxAmmo) {
+      player.isReloading = true;
+      player.reloadEndTime = now + RELOAD_TIME;
+    }
+
+    if (player.isReloading) {
+      if (now >= player.reloadEndTime) {
+        player.ammo = player.maxAmmo;
+        player.isReloading = false;
+      }
+    }
+
+    // Disparo
+    const isShootTriggered = player.input.shoot && !player.wasShooting;
+    player.wasShooting = player.input.shoot;
+
+    if (isShootTriggered && !player.isReloading) {
+      if (player.ammo > 0 && now - player.lastShotTime >= SHOT_COOLDOWN) {
+        player.ammo--;
+        player.lastShotTime = now;
+
+        if (player.inBush !== null) {
+          player.revealedUntil = now + REVEAL_TIME;
+        }
+
+        const spawnX = px + Math.cos(player.angle) * (PLAYER_SIZE / 2 + 6);
+        const spawnY = py + Math.sin(player.angle) * (PLAYER_SIZE / 2 + 6);
+
+        bullets.push({
+          id: nextBulletId++,
+          ownerId: player.id,
+          x: spawnX,
+          y: spawnY,
+          vx: Math.cos(player.angle) * BULLET_SPEED,
+          vy: Math.sin(player.angle) * BULLET_SPEED,
+          travelled: 0,
+          maxDistance: 1200
+        });
+
+        if (player.ammo === 0) {
+          player.isReloading = true;
+          player.reloadEndTime = now + RELOAD_TIME;
+        }
+      }
+    }
   }
 
-  // Envia atualização personalizada para cada cliente
-  const activeBushes = getActiveBushIds();
+  // Colisões de Tiros
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.x += b.vx;
+    b.y += b.vy;
+    b.travelled += BULLET_SPEED;
+
+    let hit = false;
+
+    if (b.x < 0 || b.x > WORLD_WIDTH || b.y < 0 || b.y > WORLD_HEIGHT || b.travelled >= b.maxDistance) {
+      hit = true;
+    } else {
+      for (const target of players.values()) {
+        if (target.isDead || target.id === b.ownerId) continue;
+
+        const tx = target.x + PLAYER_SIZE / 2;
+        const ty = target.y + PLAYER_SIZE / 2;
+        const dx = b.x - tx;
+        const dy = b.y - ty;
+
+        if (dx * dx + dy * dy <= (PLAYER_SIZE / 2 + 4) * (PLAYER_SIZE / 2 + 4)) {
+          target.hp -= BULLET_DAMAGE;
+          if (target.hp <= 0) {
+            target.hp = 0;
+            target.isDead = true;
+          }
+          hit = true;
+          break;
+        }
+      }
+    }
+
+    if (hit) {
+      bullets.splice(i, 1);
+    }
+  }
+
+  // Broadcast de Estado
+  const activeBushesList = [];
+  for (const player of players.values()) {
+    if (!player.isDead && player.inBush !== null) {
+      activeBushesList.push(player.inBush);
+    }
+  }
+
+  const publicBullets = bullets.map(b => ({ x: Math.round(b.x), y: Math.round(b.y) }));
+
   for (const [id, ws] of clients.entries()) {
     if (ws.readyState === WebSocket.OPEN) {
+      const p = players.get(id);
       ws.send(JSON.stringify({
-        type: "players",
-        players: getVisiblePlayersFor(id),
-        activeBushes
+        type: "state",
+        players: getVisiblePlayersFor(id, now),
+        bullets: publicBullets,
+        activeBushes: activeBushesList,
+        self: p ? {
+          hp: p.hp,
+          maxHp: p.maxHp,
+          ammo: p.ammo,
+          maxAmmo: p.maxAmmo,
+          isReloading: p.isReloading,
+          isDead: p.isDead
+        } : null
       }));
     }
   }
