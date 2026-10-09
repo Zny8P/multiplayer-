@@ -123,6 +123,9 @@ wss.on("connection", ws => {
       const data = JSON.parse(message);
 
       if (data.type === "join") {
+        // Impede que mensagens "join" repetidas criem jogadores adicionais na mesma conexão
+        if (id) return;
+
         id = String(nextId++);
         const player = createPlayer(id, data.name);
         players.set(id, player);
