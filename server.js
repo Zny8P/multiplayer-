@@ -140,15 +140,13 @@ wss.on("connection", ws => {
     try {
       const data = JSON.parse(message);
 
-      // Validação: Garante que a mensagem parsed seja um objeto não-nulo
       if (typeof data !== "object" || data === null) return;
 
       if (data.type === "join") {
-        if (id) return; // Impede registros duplicados na mesma conexão
+        if (id) return;
 
         id = String(nextId++);
 
-        // Validação e sanitização do nome: máximo 20 caracteres e sem espaços em branco extras
         let cleanName = typeof data.name === "string" ? data.name.trim() : "";
         if (cleanName.length > 20) {
           cleanName = cleanName.slice(0, 20);
@@ -174,7 +172,9 @@ wss.on("connection", ws => {
       if (!player) return;
 
       if (data.type === "input") {
-        // Aceita apenas valores do tipo booleano real; outros tipos são ignorados
+        // Bloqueia atualização de controles se o jogador estiver morto
+        if (player.isDead) return;
+
         if (typeof data.up === "boolean") player.input.up = data.up;
         if (typeof data.down === "boolean") player.input.down = data.down;
         if (typeof data.left === "boolean") player.input.left = data.left;
@@ -182,7 +182,6 @@ wss.on("connection", ws => {
         if (typeof data.shoot === "boolean") player.input.shoot = data.shoot;
         if (typeof data.reload === "boolean") player.input.reload = data.reload;
 
-        // Validação estrita do ângulo: aceita apenas números finitos reais
         if (typeof data.angle === "number" && Number.isFinite(data.angle)) {
           player.angle = data.angle;
         }
@@ -191,10 +190,30 @@ wss.on("connection", ws => {
 
       if (data.type === "respawn") {
         if (player.isDead) {
+          // Restauração completa do estado ao renascer
           player.isDead = false;
           player.hp = player.maxHp;
           player.ammo = player.maxAmmo;
           player.isReloading = false;
+          player.reloadEndTime = 0;
+          player.lastShotTime = 0;
+          player.revealedUntil = 0;
+          player.inBush = null;
+
+          // Evita disparo automático imediato se o botão de tiro estava pressionado antes ou durante o respawn
+          player.wasShooting = true;
+
+          player.input = {
+            up: false,
+            down: false,
+            left: false,
+            right: false,
+            angle: player.angle,
+            shoot: false,
+            reload: false
+          };
+
+          // Sorteia nova posição válida no mapa
           player.x = Math.random() * (WORLD_WIDTH - PLAYER_SIZE);
           player.y = Math.random() * (WORLD_HEIGHT - PLAYER_SIZE);
         }
@@ -202,7 +221,7 @@ wss.on("connection", ws => {
       }
 
     } catch (error) {
-      // Ignora com segurança mensagens que não sejam JSONs válidos
+      // Ignora mensagens malformadas
     }
   });
 
@@ -314,6 +333,18 @@ setInterval(() => {
           if (target.hp <= 0) {
             target.hp = 0;
             target.isDead = true;
+
+            // Interrompe ações e limpa temporizadores ao morrer
+            target.isReloading = false;
+            target.reloadEndTime = 0;
+            target.revealedUntil = 0;
+            target.inBush = null;
+            target.input.up = false;
+            target.input.down = false;
+            target.input.left = false;
+            target.input.right = false;
+            target.input.shoot = false;
+            target.input.reload = false;
           }
           hit = true;
           break;
