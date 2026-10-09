@@ -140,11 +140,21 @@ wss.on("connection", ws => {
     try {
       const data = JSON.parse(message);
 
+      // Validação: Garante que a mensagem parsed seja um objeto não-nulo
+      if (typeof data !== "object" || data === null) return;
+
       if (data.type === "join") {
-        if (id) return; // Impede registos duplicados na mesma conexão
+        if (id) return; // Impede registros duplicados na mesma conexão
 
         id = String(nextId++);
-        const player = createPlayer(id, data.name);
+
+        // Validação e sanitização do nome: máximo 20 caracteres e sem espaços em branco extras
+        let cleanName = typeof data.name === "string" ? data.name.trim() : "";
+        if (cleanName.length > 20) {
+          cleanName = cleanName.slice(0, 20);
+        }
+
+        const player = createPlayer(id, cleanName);
         players.set(id, player);
         clients.set(id, ws);
 
@@ -164,16 +174,19 @@ wss.on("connection", ws => {
       if (!player) return;
 
       if (data.type === "input") {
-        player.input.up = !!data.up;
-        player.input.down = !!data.down;
-        player.input.left = !!data.left;
-        player.input.right = !!data.right;
-        player.input.shoot = !!data.shoot;
-        player.input.reload = !!data.reload;
+        // Aceita apenas valores do tipo booleano real; outros tipos são ignorados
+        if (typeof data.up === "boolean") player.input.up = data.up;
+        if (typeof data.down === "boolean") player.input.down = data.down;
+        if (typeof data.left === "boolean") player.input.left = data.left;
+        if (typeof data.right === "boolean") player.input.right = data.right;
+        if (typeof data.shoot === "boolean") player.input.shoot = data.shoot;
+        if (typeof data.reload === "boolean") player.input.reload = data.reload;
 
-        if (typeof data.angle === "number") {
+        // Validação estrita do ângulo: aceita apenas números finitos reais
+        if (typeof data.angle === "number" && Number.isFinite(data.angle)) {
           player.angle = data.angle;
         }
+        return;
       }
 
       if (data.type === "respawn") {
@@ -185,10 +198,11 @@ wss.on("connection", ws => {
           player.x = Math.random() * (WORLD_WIDTH - PLAYER_SIZE);
           player.y = Math.random() * (WORLD_HEIGHT - PLAYER_SIZE);
         }
+        return;
       }
 
     } catch (error) {
-      console.log("Mensagem inválida.");
+      // Ignora com segurança mensagens que não sejam JSONs válidos
     }
   });
 
@@ -340,7 +354,6 @@ setInterval(() => {
         } : null
       }));
     } else if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
-      // Limpeza preventiva utilizando o mesmo mecanismo unificado
       removePlayer(id);
     }
   }
