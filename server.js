@@ -61,6 +61,16 @@ function generateBushes() {
 }
 generateBushes();
 
+// Mecanismo Único e Idempotente de Limpeza de Jogadores
+function removePlayer(id) {
+  if (!id) return;
+  if (players.has(id) || clients.has(id)) {
+    players.delete(id);
+    clients.delete(id);
+    console.log(`Jogador ${id} desconectado e removido.`);
+  }
+}
+
 function createPlayer(id, name) {
   return {
     id,
@@ -118,13 +128,20 @@ function getVisiblePlayersFor(recipientId, now) {
 wss.on("connection", ws => {
   let id = null;
 
+  function cleanup() {
+    if (id) {
+      const playerId = id;
+      id = null;
+      removePlayer(playerId);
+    }
+  }
+
   ws.on("message", message => {
     try {
       const data = JSON.parse(message);
 
       if (data.type === "join") {
-        // Impede que mensagens "join" repetidas criem jogadores adicionais na mesma conexão
-        if (id) return;
+        if (id) return; // Impede registos duplicados na mesma conexão
 
         id = String(nextId++);
         const player = createPlayer(id, data.name);
@@ -175,20 +192,8 @@ wss.on("connection", ws => {
     }
   });
 
-  ws.on("close", () => {
-    if (id) {
-      players.delete(id);
-      clients.delete(id);
-      console.log(`Jogador ${id} saiu.`);
-    }
-  });
-
-  ws.on("error", () => {
-    if (id) {
-      players.delete(id);
-      clients.delete(id);
-    }
-  });
+  ws.on("close", cleanup);
+  ws.on("error", cleanup);
 });
 
 // Loop principal (30 FPS)
@@ -334,6 +339,9 @@ setInterval(() => {
           isDead: p.isDead
         } : null
       }));
+    } else if (ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+      // Limpeza preventiva utilizando o mesmo mecanismo unificado
+      removePlayer(id);
     }
   }
 }, 1000 / 30);
