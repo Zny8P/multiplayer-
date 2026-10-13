@@ -40,7 +40,8 @@ const RELOAD_TIME = 1500;
 const REVEAL_TIME = 1500;
 
 const MAX_MESSAGE_SIZE = 512;
-const MIN_INPUT_INTERVAL = 20; // 20 ms rate limit
+const MIN_INPUT_INTERVAL = 20; // 20 ms rate limit para inputs
+const MIN_RESPAWN_INTERVAL = 500; // 500 ms rate limit para respawn
 
 // Normalização consistente do ângulo sem alterar a direção
 function normalizeAngle(angle) {
@@ -102,6 +103,7 @@ function createPlayer(id, name) {
     inBush: null,
     wasShooting: false,
     lastInputTime: 0,
+    reloadTriggered: false,
     input: {
       moveX: 0,
       moveY: 0,
@@ -137,6 +139,8 @@ function getVisiblePlayersFor(recipientId, now) {
 
 wss.on("connection", ws => {
   let id = null;
+  let hasJoined = false;
+  let lastRespawnTime = 0;
 
   function cleanup() {
     if (id) {
@@ -155,8 +159,11 @@ wss.on("connection", ws => {
       if (typeof data !== "object" || data === null) return;
       if (typeof data.type !== "string") return;
 
+      const now = Date.now();
+
       if (data.type === "join") {
-        if (id) return;
+        if (id || hasJoined) return;
+        hasJoined = true;
 
         id = String(nextId++);
 
@@ -188,18 +195,16 @@ wss.on("connection", ws => {
       if (data.type === "input") {
         if (player.isDead) return;
 
-        // Proteção contra excesso de mensagens (20 ms rate limit)
-        const now = Date.now();
+        // Rate limit para inputs (20 ms)
         if (now - player.lastInputTime < MIN_INPUT_INTERVAL) {
           return;
         }
 
-        // Atualiza imediatamente o timestamp para barrar spam de pacotes
         player.lastInputTime = now;
 
-        // Validação atômica dos inputs
         const candidateInput = { ...player.input };
         let candidateAngle = player.angle;
+        let candidateReloadTrigger = false;
 
         if (data.moveX !== undefined) {
           if (typeof data.moveX !== "number" || !Number.isFinite(data.moveX)) return;
@@ -216,6 +221,9 @@ wss.on("connection", ws => {
         if (data.reload !== undefined) {
           if (typeof data.reload !== "boolean") return;
           candidateInput.reload = data.reload;
+          if (data.reload) {
+            candidateReloadTrigger = true;
+          }
         }
         if (data.angle !== undefined) {
           if (typeof data.angle !== "number" || !Number.isFinite(data.angle)) return;
@@ -225,37 +233,46 @@ wss.on("connection", ws => {
         // Commit atômico bem-sucedido após todas as validações passarem
         player.input = candidateInput;
         player.angle = candidateAngle;
-        return;
-      }
 
-      if (data.type === "respawn") {
-        if (player.isDead) {
-          player.isDead = false;
-          player.hp = player.maxHp;
-          player.ammo = player.maxAmmo;
-          player.isReloading = false;
-          player.reloadEndTime = 0;
-          player.lastShotTime = 0;
-          player.revealedUntil = 0;
-          player.inBush = null;
-          player.wasShooting = true;
-
-          player.input = {
-            moveX: 0,
-            moveY: 0,
-            angle: player.angle,
-            shoot: false,
-            reload: false
-          };
-
-          player.x = Math.random() * (WORLD_WIDTH - PLAYER_SIZE);
-          player.y = Math.random() * (WORLD_HEIGHT - PLAYER_SIZE);
+        // Regista a recarga apenas após a validação completa de todo o pacote
+        if (candidateReloadTrigger && !player.isDead && !player.isReloading && player.ammo < player.maxAmmo && !player.reloadTriggered) {
+          player.reloadTriggered = true;
         }
         return;
       }
 
+      if (data.type === "respawn") {
+        // Validação estrita: exige que esteja morto e respeita o rate limit de respawn
+        if (!player.isDead) return;
+        if (now - lastRespawnTime < MIN_RESPAWN_INTERVAL) return;
+        lastRespawnTime = now;
+
+        player.isDead = false;
+        player.hp = player.maxHp;
+        player.ammo = player.maxAmmo;
+        player.isReloading = false;
+        player.reloadEndTime = 0;
+        player.lastShotTime = 0;
+        player.revealedUntil = 0;
+        player.inBush = null;
+        player.wasShooting = true;
+        player.reloadTriggered = false;
+
+        player.input = {
+          moveX: 0,
+          moveY: 0,
+          angle: player.angle,
+          shoot: false,
+          reload: false
+        };
+
+        player.x = Math.random() * (WORLD_WIDTH - PLAYER_SIZE);
+        player.y = Math.random() * (WORLD_HEIGHT - PLAYER_SIZE);
+        return;
+      }
+
     } catch (error) {
-      // Tratamento de erros seguro para evitar crash do servidor
+      // Tratamento de erros seguro
     }
   });
 
@@ -306,10 +323,13 @@ setInterval(() => {
     }
     player.inBush = insideBushId;
 
-    // Recarga
-    if (player.input.reload && !player.isReloading && player.ammo < player.maxAmmo) {
-      player.isReloading = true;
-      player.reloadEndTime = now + RELOAD_TIME;
+    // Processamento da recarga confiável consumindo o sinalizador
+    if (player.reloadTriggered) {
+      player.reloadTriggered = false;
+      if (!player.isDead && !player.isReloading && player.ammo < player.maxAmmo) {
+        player.isReloading = true;
+        player.reloadEndTime = now + RELOAD_TIME;
+      }
     }
 
     if (player.isReloading) {
@@ -323,8 +343,8 @@ setInterval(() => {
     const isShootTriggered = player.input.shoot && !player.wasShooting;
     player.wasShooting = player.input.shoot;
 
-    if (isShootTriggered && !player.isReloading) {
-      if (player.ammo > 0 && now - player.lastShotTime >= SHOT_COOLDOWN) {
+    if (isShootTriggered) {
+      if (!player.isDead && !player.isReloading && player.ammo > 0 && (now - player.lastShotTime >= SHOT_COOLDOWN)) {
         player.ammo--;
         player.lastShotTime = now;
 
@@ -349,6 +369,7 @@ setInterval(() => {
         if (player.ammo === 0) {
           player.isReloading = true;
           player.reloadEndTime = now + RELOAD_TIME;
+          player.reloadTriggered = false; // Limpa qualquer intenção manual pendente ao iniciar a recarga automática
         }
       }
     }
@@ -384,6 +405,7 @@ setInterval(() => {
             target.reloadEndTime = 0;
             target.revealedUntil = 0;
             target.inBush = null;
+            target.reloadTriggered = false;
             target.input.moveX = 0;
             target.input.moveY = 0;
             target.input.shoot = false;
