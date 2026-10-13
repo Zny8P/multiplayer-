@@ -17,7 +17,6 @@ const server = http.createServer((req, res) => {
   });
 });
 
-// Limite real de payload configurado nativamente no servidor WebSocket (512 bytes)
 const wss = new WebSocket.Server({ server, maxPayload: 512 });
 const players = new Map();
 const clients = new Map();
@@ -26,13 +25,11 @@ let bullets = [];
 let nextId = 1;
 let nextBulletId = 1;
 
-// Configurações do Mundo
 const WORLD_WIDTH = 2000;
 const WORLD_HEIGHT = 2000;
 const PLAYER_SIZE = 30;
 const SPEED = 5;
 
-// Configurações da Arma
 const BULLET_SPEED = 18;
 const BULLET_DAMAGE = 10;
 const SHOT_COOLDOWN = 500;
@@ -40,10 +37,9 @@ const RELOAD_TIME = 1500;
 const REVEAL_TIME = 1500;
 
 const MAX_MESSAGE_SIZE = 512;
-const MIN_INPUT_INTERVAL = 20; // 20 ms rate limit para inputs
-const MIN_RESPAWN_INTERVAL = 500; // 500 ms rate limit para respawn
+const MIN_INPUT_INTERVAL = 20;
+const MIN_RESPAWN_INTERVAL = 500;
 
-// Normalização consistente do ângulo sem alterar a direção
 function normalizeAngle(angle) {
   const TWO_PI = Math.PI * 2;
   let norm = angle % TWO_PI;
@@ -51,7 +47,6 @@ function normalizeAngle(angle) {
   return norm;
 }
 
-// Arbustos
 const BUSHES_COUNT = 35;
 const bushes = [];
 
@@ -79,7 +74,6 @@ function removePlayer(id) {
   if (players.has(id) || clients.has(id)) {
     players.delete(id);
     clients.delete(id);
-    console.log(`Jogador ${id} desconectado e removido.`);
   }
 }
 
@@ -177,8 +171,6 @@ wss.on("connection", ws => {
         players.set(id, player);
         clients.set(id, ws);
 
-        console.log(`Jogador ${player.name} (${id}) entrou.`);
-
         ws.send(JSON.stringify({
           type: "init",
           id,
@@ -195,7 +187,6 @@ wss.on("connection", ws => {
       if (data.type === "input") {
         if (player.isDead) return;
 
-        // Rate limit para inputs (20 ms)
         if (now - player.lastInputTime < MIN_INPUT_INTERVAL) {
           return;
         }
@@ -230,11 +221,9 @@ wss.on("connection", ws => {
           candidateAngle = normalizeAngle(data.angle);
         }
 
-        // Commit atômico bem-sucedido após todas as validações passarem
         player.input = candidateInput;
         player.angle = candidateAngle;
 
-        // Regista a recarga apenas após a validação completa de todo o pacote
         if (candidateReloadTrigger && !player.isDead && !player.isReloading && player.ammo < player.maxAmmo && !player.reloadTriggered) {
           player.reloadTriggered = true;
         }
@@ -242,7 +231,6 @@ wss.on("connection", ws => {
       }
 
       if (data.type === "respawn") {
-        // Validação estrita: exige que esteja morto e respeita o rate limit de respawn
         if (!player.isDead) return;
         if (now - lastRespawnTime < MIN_RESPAWN_INTERVAL) return;
         lastRespawnTime = now;
@@ -271,16 +259,13 @@ wss.on("connection", ws => {
         return;
       }
 
-    } catch (error) {
-      // Tratamento de erros seguro
-    }
+    } catch (error) {}
   });
 
   ws.on("close", cleanup);
   ws.on("error", cleanup);
 });
 
-// Loop principal (30 FPS)
 let lastLoopTime = Date.now();
 
 setInterval(() => {
@@ -289,7 +274,6 @@ setInterval(() => {
   lastLoopTime = now;
   dt = Math.min(dt, 0.1);
 
-  // Movimentação e Colisão entre Jogadores (Patch 10)
   const playersArr = Array.from(players.values());
 
   for (const player of playersArr) {
@@ -312,7 +296,6 @@ setInterval(() => {
     player.y = Math.max(0, Math.min(WORLD_HEIGHT - PLAYER_SIZE, player.y));
   }
 
-  // Resolução de Colisões Corpo-a-Corpo (Patch 10 - Simples e Direta)
   const collisionIterations = 3;
   const radius = PLAYER_SIZE / 2;
   const minDist = PLAYER_SIZE;
@@ -371,7 +354,6 @@ setInterval(() => {
   for (const player of players.values()) {
     if (player.isDead) continue;
 
-    // Arbustos
     const px = player.x + PLAYER_SIZE / 2;
     const py = player.y + PLAYER_SIZE / 2;
     let insideBushId = null;
@@ -386,7 +368,6 @@ setInterval(() => {
     }
     player.inBush = insideBushId;
 
-    // Processamento da recarga confiável consumindo o sinalizador
     if (player.reloadTriggered) {
       player.reloadTriggered = false;
       if (!player.isDead && !player.isReloading && player.ammo < player.maxAmmo) {
@@ -402,7 +383,6 @@ setInterval(() => {
       }
     }
 
-    // Disparo
     const isShootTriggered = player.input.shoot && !player.wasShooting;
     player.wasShooting = player.input.shoot;
 
@@ -438,7 +418,6 @@ setInterval(() => {
     }
   }
 
-  // Colisões e Movimentação de Projéteis (Com Delta Time)
   const bulletFrameFactor = dt * 30;
 
   for (let i = bullets.length - 1; i >= 0; i--) {
@@ -478,7 +457,7 @@ setInterval(() => {
             target.input.shoot = false;
             target.input.reload = false;
           }
-          hit = true;
+          hit = type = true; // Mantém a compatibilidade de remoção
           break;
         }
       }
@@ -489,7 +468,15 @@ setInterval(() => {
     }
   }
 
-  // Broadcast de Estado (Sem activeBushes)
+  // Identifica quais arbustos têm jogadores vivos a ocupá-los (activeBushes)
+  const activeBushesSet = new Set();
+  for (const player of players.values()) {
+    if (!player.isDead && player.inBush !== null) {
+      activeBushesSet.add(player.inBush);
+    }
+  }
+  const activeBushes = Array.from(activeBushesSet);
+
   const publicBullets = bullets.map(b => ({ x: Math.round(b.x), y: Math.round(b.y) }));
 
   for (const [id, ws] of clients.entries()) {
@@ -499,6 +486,7 @@ setInterval(() => {
         type: "state",
         players: getVisiblePlayersFor(id, now),
         bullets: publicBullets,
+        activeBushes: activeBushes,
         self: p ? {
           hp: p.hp,
           maxHp: p.maxHp,
