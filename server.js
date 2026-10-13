@@ -289,7 +289,10 @@ setInterval(() => {
   lastLoopTime = now;
   dt = Math.min(dt, 0.1);
 
-  for (const player of players.values()) {
+  // Movimentação e Colisão entre Jogadores (Patch 10)
+  const playersArr = Array.from(players.values());
+
+  for (const player of playersArr) {
     if (player.isDead) continue;
 
     let moveX = player.input.moveX || 0;
@@ -307,6 +310,66 @@ setInterval(() => {
 
     player.x = Math.max(0, Math.min(WORLD_WIDTH - PLAYER_SIZE, player.x));
     player.y = Math.max(0, Math.min(WORLD_HEIGHT - PLAYER_SIZE, player.y));
+  }
+
+  // Resolução de Colisões Corpo-a-Corpo (Patch 10 - Simples e Direta)
+  const collisionIterations = 3;
+  const radius = PLAYER_SIZE / 2;
+  const minDist = PLAYER_SIZE;
+
+  function clampPosition(p) {
+    p.x = Math.max(0, Math.min(WORLD_WIDTH - PLAYER_SIZE, p.x));
+    p.y = Math.max(0, Math.min(WORLD_HEIGHT - PLAYER_SIZE, p.y));
+  }
+
+  for (let iter = 0; iter < collisionIterations; iter++) {
+    for (let i = 0; i < playersArr.length; i++) {
+      const p1 = playersArr[i];
+      if (p1.isDead) continue;
+      const c1x = p1.x + radius;
+      const c1y = p1.y + radius;
+
+      for (let j = i + 1; j < playersArr.length; j++) {
+        const p2 = playersArr[j];
+        if (p2.isDead) continue;
+        const c2x = p2.x + radius;
+        const c2y = p2.y + radius;
+
+        let dx = c2x - c1x;
+        let dy = c2y - c1y;
+        let distSq = dx * dx + dy * dy;
+
+        let nx = 0;
+        let ny = 0;
+        let overlap = 0;
+
+        if (distSq < minDist * minDist && distSq > 0) {
+          let dist = Math.sqrt(distSq);
+          overlap = minDist - dist;
+          nx = dx / dist;
+          ny = dy / dist;
+        } else if (distSq === 0) {
+          overlap = minDist;
+          const angle = (i * 13 + j * 17) % (Math.PI * 2);
+          nx = Math.cos(angle);
+          ny = Math.sin(angle);
+        }
+
+        if (overlap > 0) {
+          p1.x -= nx * (overlap * 0.5);
+          p1.y -= ny * (overlap * 0.5);
+          clampPosition(p1);
+
+          p2.x += nx * (overlap * 0.5);
+          p2.y += ny * (overlap * 0.5);
+          clampPosition(p2);
+        }
+      }
+    }
+  }
+
+  for (const player of players.values()) {
+    if (player.isDead) continue;
 
     // Arbustos
     const px = player.x + PLAYER_SIZE / 2;
@@ -369,7 +432,7 @@ setInterval(() => {
         if (player.ammo === 0) {
           player.isReloading = true;
           player.reloadEndTime = now + RELOAD_TIME;
-          player.reloadTriggered = false; // Limpa qualquer intenção manual pendente ao iniciar a recarga automática
+          player.reloadTriggered = false;
         }
       }
     }
