@@ -489,14 +489,7 @@ setInterval(() => {
     }
   }
 
-  // Broadcast de Estado
-  const activeBushesList = [];
-  for (const player of players.values()) {
-    if (!player.isDead && player.inBush !== null) {
-      activeBushesList.push(player.inBush);
-    }
-  }
-
+  // Broadcast de Estado (Sem activeBushes)
   const publicBullets = bullets.map(b => ({ x: Math.round(b.x), y: Math.round(b.y) }));
 
   for (const [id, ws] of clients.entries()) {
@@ -506,7 +499,6 @@ setInterval(() => {
         type: "state",
         players: getVisiblePlayersFor(id, now),
         bullets: publicBullets,
-        activeBushes: activeBushesList,
         self: p ? {
           hp: p.hp,
           maxHp: p.maxHp,
