@@ -17,7 +17,8 @@ const server = http.createServer((req, res) => {
   });
 });
 
-const wss = new WebSocket.Server({ server });
+// Limite real de payload configurado nativamente no servidor WebSocket (512 bytes)
+const wss = new WebSocket.Server({ server, maxPayload: 512 });
 const players = new Map();
 const clients = new Map();
 let bullets = [];
@@ -37,6 +38,17 @@ const BULLET_DAMAGE = 10;
 const SHOT_COOLDOWN = 500;
 const RELOAD_TIME = 1500;
 const REVEAL_TIME = 1500;
+
+const MAX_MESSAGE_SIZE = 512;
+const MIN_INPUT_INTERVAL = 20; // 20 ms rate limit
+
+// Normalização consistente do ângulo sem alterar a direção
+function normalizeAngle(angle) {
+  const TWO_PI = Math.PI * 2;
+  let norm = angle % TWO_PI;
+  if (norm < 0) norm += TWO_PI;
+  return norm;
+}
 
 // Arbustos
 const BUSHES_COUNT = 35;
@@ -89,6 +101,7 @@ function createPlayer(id, name) {
     color: `hsl(${Math.random() * 360}, 80%, 60%)`,
     inBush: null,
     wasShooting: false,
+    lastInputTime: 0,
     input: {
       moveX: 0,
       moveY: 0,
@@ -135,16 +148,20 @@ wss.on("connection", ws => {
 
   ws.on("message", message => {
     try {
-      const data = JSON.parse(message);
+      if (typeof message !== "string" && !Buffer.isBuffer(message)) return;
+      if (message.length > MAX_MESSAGE_SIZE) return;
 
+      const data = JSON.parse(message);
       if (typeof data !== "object" || data === null) return;
+      if (typeof data.type !== "string") return;
 
       if (data.type === "join") {
         if (id) return;
 
         id = String(nextId++);
 
-        let cleanName = typeof data.name === "string" ? data.name.trim() : "";
+        let cleanName = typeof data.name === "string" ? data.name.trim() : "Jogador";
+        if (cleanName.length === 0) cleanName = "Jogador";
         if (cleanName.length > 20) {
           cleanName = cleanName.slice(0, 20);
         }
@@ -171,18 +188,43 @@ wss.on("connection", ws => {
       if (data.type === "input") {
         if (player.isDead) return;
 
-        if (typeof data.moveX === "number" && Number.isFinite(data.moveX)) {
-          player.input.moveX = Math.max(-1, Math.min(1, data.moveX));
+        // Proteção contra excesso de mensagens (20 ms rate limit)
+        const now = Date.now();
+        if (now - player.lastInputTime < MIN_INPUT_INTERVAL) {
+          return;
         }
-        if (typeof data.moveY === "number" && Number.isFinite(data.moveY)) {
-          player.input.moveY = Math.max(-1, Math.min(1, data.moveY));
-        }
-        if (typeof data.shoot === "boolean") player.input.shoot = data.shoot;
-        if (typeof data.reload === "boolean") player.input.reload = data.reload;
 
-        if (typeof data.angle === "number" && Number.isFinite(data.angle)) {
-          player.angle = data.angle;
+        // Atualiza imediatamente o timestamp para barrar spam de pacotes
+        player.lastInputTime = now;
+
+        // Validação atômica dos inputs
+        const candidateInput = { ...player.input };
+        let candidateAngle = player.angle;
+
+        if (data.moveX !== undefined) {
+          if (typeof data.moveX !== "number" || !Number.isFinite(data.moveX)) return;
+          candidateInput.moveX = Math.max(-1, Math.min(1, data.moveX));
         }
+        if (data.moveY !== undefined) {
+          if (typeof data.moveY !== "number" || !Number.isFinite(data.moveY)) return;
+          candidateInput.moveY = Math.max(-1, Math.min(1, data.moveY));
+        }
+        if (data.shoot !== undefined) {
+          if (typeof data.shoot !== "boolean") return;
+          candidateInput.shoot = data.shoot;
+        }
+        if (data.reload !== undefined) {
+          if (typeof data.reload !== "boolean") return;
+          candidateInput.reload = data.reload;
+        }
+        if (data.angle !== undefined) {
+          if (typeof data.angle !== "number" || !Number.isFinite(data.angle)) return;
+          candidateAngle = normalizeAngle(data.angle);
+        }
+
+        // Commit atômico bem-sucedido após todas as validações passarem
+        player.input = candidateInput;
+        player.angle = candidateAngle;
         return;
       }
 
@@ -213,7 +255,7 @@ wss.on("connection", ws => {
       }
 
     } catch (error) {
-      // Ignorar mensagens malformadas
+      // Tratamento de erros seguro para evitar crash do servidor
     }
   });
 
@@ -221,7 +263,7 @@ wss.on("connection", ws => {
   ws.on("error", cleanup);
 });
 
-// Loop principal (30 FPS) com Movimentação Livre e Normalizada
+// Loop principal (30 FPS)
 let lastLoopTime = Date.now();
 
 setInterval(() => {
@@ -236,7 +278,6 @@ setInterval(() => {
     let moveX = player.input.moveX || 0;
     let moveY = player.input.moveY || 0;
 
-    // Normalização para garantir velocidade consistente em diagonais e analógicos
     const mag = Math.sqrt(moveX * moveX + moveY * moveY);
     if (mag > 1) {
       moveX /= mag;
@@ -363,7 +404,7 @@ setInterval(() => {
   const activeBushesList = [];
   for (const player of players.values()) {
     if (!player.isDead && player.inBush !== null) {
-      activeBushesList.path = activeBushesList.push(player.inBush);
+      activeBushesList.push(player.inBush);
     }
   }
 
