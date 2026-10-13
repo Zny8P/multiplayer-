@@ -457,7 +457,7 @@ setInterval(() => {
             target.input.shoot = false;
             target.input.reload = false;
           }
-          hit = type = true; // Mantém a compatibilidade de remoção
+          hit = true;
           break;
         }
       }
@@ -468,7 +468,6 @@ setInterval(() => {
     }
   }
 
-  // Identifica quais arbustos têm jogadores vivos a ocupá-los (activeBushes)
   const activeBushesSet = new Set();
   for (const player of players.values()) {
     if (!player.isDead && player.inBush !== null) {
