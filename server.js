@@ -25,20 +25,20 @@ let bullets = [];
 let nextId = 1;
 let nextBulletId = 1;
 
-// Configurações do Mundo
+// Configurações do Mundo[span_6](start_span)[span_6](end_span)
 const WORLD_WIDTH = 2000;
 const WORLD_HEIGHT = 2000;
 const PLAYER_SIZE = 30;
 const SPEED = 5;
 
-// Configurações da Arma
+// Configurações da Arma[span_7](start_span)[span_7](end_span)
 const BULLET_SPEED = 18;
 const BULLET_DAMAGE = 10;
 const SHOT_COOLDOWN = 500; // 0.5s por tiro
 const RELOAD_TIME = 1500;   // 1.5s recarga
 const REVEAL_TIME = 1500;   // 1.5s revelação na moita
 
-// Arbustos
+// Arbustos[span_8](start_span)[span_8](end_span)
 const BUSHES_COUNT = 35;
 const bushes = [];
 
@@ -61,7 +61,7 @@ function generateBushes() {
 }
 generateBushes();
 
-// Mecanismo Único e Idempotente de Limpeza de Jogadores
+// Mecanismo Único e Idempotente de Limpeza de Jogadores[span_9](start_span)[span_9](end_span)
 function removePlayer(id) {
   if (!id) return;
   if (players.has(id) || clients.has(id)) {
@@ -172,7 +172,6 @@ wss.on("connection", ws => {
       if (!player) return;
 
       if (data.type === "input") {
-        // Bloqueia atualização de controles se o jogador estiver morto
         if (player.isDead) return;
 
         if (typeof data.up === "boolean") player.input.up = data.up;
@@ -190,7 +189,6 @@ wss.on("connection", ws => {
 
       if (data.type === "respawn") {
         if (player.isDead) {
-          // Restauração completa do estado ao renascer
           player.isDead = false;
           player.hp = player.maxHp;
           player.ammo = player.maxAmmo;
@@ -199,8 +197,6 @@ wss.on("connection", ws => {
           player.lastShotTime = 0;
           player.revealedUntil = 0;
           player.inBush = null;
-
-          // Evita disparo automático imediato se o botão de tiro estava pressionado antes ou durante o respawn
           player.wasShooting = true;
 
           player.input = {
@@ -213,7 +209,6 @@ wss.on("connection", ws => {
             reload: false
           };
 
-          // Sorteia nova posição válida no mapa
           player.x = Math.random() * (WORLD_WIDTH - PLAYER_SIZE);
           player.y = Math.random() * (WORLD_HEIGHT - PLAYER_SIZE);
         }
@@ -221,7 +216,7 @@ wss.on("connection", ws => {
       }
 
     } catch (error) {
-      // Ignora mensagens malformadas
+      // Ignora mensagens malformadas[span_10](start_span)[span_10](end_span)
     }
   });
 
@@ -229,23 +224,39 @@ wss.on("connection", ws => {
   ws.on("error", cleanup);
 });
 
-// Loop principal (30 FPS)
+// Loop principal com Delta Time e Normalização de Movimento (30 FPS alvo)[span_11](start_span)[span_11](end_span)
+let lastLoopTime = Date.now();
+
 setInterval(() => {
   const now = Date.now();
+  let dt = (now - lastLoopTime) / 1000;
+  lastLoopTime = now;
+  dt = Math.min(dt, 0.1); // Limita o delta time máximo para evitar saltos bruscos
 
   for (const player of players.values()) {
     if (player.isDead) continue;
 
-    // Movimentação
-    if (player.input.up) player.y -= SPEED;
-    if (player.input.down) player.y += SPEED;
-    if (player.input.left) player.x -= SPEED;
-    if (player.input.right) player.x += SPEED;
+    // Movimentação com Vetores Direcionais Normalizados
+    let moveX = 0;
+    let moveY = 0;
+    if (player.input.up) moveY -= 1;
+    if (player.input.down) moveY += 1;
+    if (player.input.left) moveX -= 1;
+    if (player.input.right) moveX += 1;
+
+    if (moveX !== 0 && moveY !== 0) {
+      moveX *= Math.SQRT1_2;
+      moveY *= Math.SQRT1_2;
+    }
+
+    const frameFactor = dt * 30; // Normaliza o deslocamento proporcional ao tempo decorrido
+    player.x += moveX * SPEED * frameFactor;
+    player.y += moveY * SPEED * frameFactor;
 
     player.x = Math.max(0, Math.min(WORLD_WIDTH - PLAYER_SIZE, player.x));
     player.y = Math.max(0, Math.min(WORLD_HEIGHT - PLAYER_SIZE, player.y));
 
-    // Arbusto
+    // Arbusto[span_12](start_span)[span_12](end_span)
     const px = player.x + PLAYER_SIZE / 2;
     const py = player.y + PLAYER_SIZE / 2;
     let insideBushId = null;
@@ -260,7 +271,7 @@ setInterval(() => {
     }
     player.inBush = insideBushId;
 
-    // Recarga
+    // Recarga[span_13](start_span)[span_13](end_span)
     if (player.input.reload && !player.isReloading && player.ammo < player.maxAmmo) {
       player.isReloading = true;
       player.reloadEndTime = now + RELOAD_TIME;
@@ -273,7 +284,7 @@ setInterval(() => {
       }
     }
 
-    // Disparo
+    // Disparo[span_14](start_span)[span_14](end_span)
     const isShootTriggered = player.input.shoot && !player.wasShooting;
     player.wasShooting = player.input.shoot;
 
@@ -308,7 +319,7 @@ setInterval(() => {
     }
   }
 
-  // Colisões de Tiros
+  // Colisões de Tiros[span_15](start_span)[span_15](end_span)
   for (let i = bullets.length - 1; i >= 0; i--) {
     const b = bullets[i];
     b.x += b.vx;
@@ -334,7 +345,6 @@ setInterval(() => {
             target.hp = 0;
             target.isDead = true;
 
-            // Interrompe ações e limpa temporizadores ao morrer
             target.isReloading = false;
             target.reloadEndTime = 0;
             target.revealedUntil = 0;
@@ -357,7 +367,7 @@ setInterval(() => {
     }
   }
 
-  // Broadcast de Estado
+  // Broadcast de Estado[span_16](start_span)[span_16](end_span)
   const activeBushesList = [];
   for (const player of players.values()) {
     if (!player.isDead && player.inBush !== null) {
