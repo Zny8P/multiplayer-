@@ -375,12 +375,16 @@ setInterval(() => {
     }
   }
 
-  // Colisões de Tiros
+  // Colisões e Movimentação de Projéteis (Com Delta Time)
+  const bulletFrameFactor = dt * 30;
+
   for (let i = bullets.length - 1; i >= 0; i--) {
     const b = bullets[i];
-    b.x += b.vx;
-    b.y += b.vy;
-    b.travelled += BULLET_SPEED;
+    const stepDist = BULLET_SPEED * bulletFrameFactor;
+
+    b.x += b.vx * bulletFrameFactor;
+    b.y += b.vy * bulletFrameFactor;
+    b.travelled += stepDist;
 
     let hit = false;
 
